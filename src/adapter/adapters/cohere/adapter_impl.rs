@@ -2,8 +2,7 @@ use crate::adapter::cohere::CohereStreamer;
 use crate::adapter::support::get_api_key_resolver;
 use crate::adapter::{Adapter, AdapterConfig, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
-	ChatRequest, ChatOptionsSet, ChatResponse, ChatRole, ChatStream, ChatStreamResponse, MessageContent,
-	MetaUsage,
+	ChatMessage, ChatOptionsSet, ChatRequest, ChatResponse, ChatResponsePayload, ChatRole, ChatStream, ChatStreamResponse, MessageContent, MetaUsage
 };
 use crate::support::value_ext::ValueExt;
 use crate::webc::{WebResponse, WebStream};
@@ -113,7 +112,10 @@ impl Adapter for CohereAdapter {
 			.x_take::<Option<String>>("message")?
 			.map(MessageContent::from);
 
-		Ok(ChatResponse { content, usage })
+			Ok(ChatResponse { 
+				payload: ChatResponsePayload::Content(content), 
+				usage }
+			)
 	}
 
 	fn to_chat_stream(
@@ -164,38 +166,45 @@ impl CohereAdapter {
 	/// - add all of the system message in the 'preamble' (this might change when ChatReq will have `.system`)
 	/// - build the chat_history with the rest
 	fn into_cohere_request_parts(model_info: ModelInfo, mut chat_req: ChatRequest) -> Result<CohereChatRequestParts> {
-		let mut chat_history: Vec<Value> = Vec::new();
-		let mut systems: Vec<String> = Vec::new();
+		use ChatMessage::*;
 
-		// -- Add the eventual system as pr
-		if let Some(system) = chat_req.system {
-			systems.push(system);
-		}
+		let mut chat_history: Vec<Value> = Vec::new();
+		let mut systems: Vec<String> = Vec::new();		
 
 		// -- Build extract the last user message
 		let last_chat_msg = chat_req.messages.pop().ok_or_else(|| Error::ChatReqHasNoMessages {
 			model_info: model_info.clone(),
-		})?;
-		if !matches!(last_chat_msg.role, ChatRole::User) {
-			return Err(Error::LastChatMessageIsNoUser {
-				model_info: model_info.clone(),
-				actual_role: last_chat_msg.role,
-			});
-		}
+		})?;		
+
+		// last msg must be a `ChatMessage::User`
 		// will handle more type later
-		let MessageContent::Text(message) = last_chat_msg.content;
+		let MessageContent::Text(message) = match last_chat_msg {
+			User { content, .. } => content,
+			_ => {
+				return Err(Error::LastChatMessageIsNotUser {
+					model_info: model_info.clone(),
+					actual_role: last_chat_msg.into(),
+				})
+			}
+		};
 
 		// -- Build
 		for msg in chat_req.messages {
 			// Note: Will handle more types later
-			let MessageContent::Text(content) = msg.content;
+			//let MessageContent::Text(content) = msg.content;
 
-			match msg.role {
+			match msg {
 				// for now, system and tool goes to system
-				ChatRole::System => systems.push(content),
-				ChatRole::User => chat_history.push(json! ({"role": "USER", "content": content})),
-				ChatRole::Assistant => chat_history.push(json! ({"role": "CHATBOT", "content": content})),
-				ChatRole::Tool => {
+				System{content} => systems.push(content),
+				User {content, ..} => {
+					let MessageContent::Text(content) = content;
+					chat_history.push(json! ({"role": "USER", "content": content}))
+				},
+				Assistant{content, ..} => {
+					let MessageContent::Text(content) = content; 
+					chat_history.push(json! ({"role": "CHATBOT", "content": content}))
+				},
+				ToolResponse(_tool_msg) => {
 					return Err(Error::MessageRoleNotSupported {
 						model_info,
 						role: ChatRole::Tool,

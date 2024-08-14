@@ -24,6 +24,10 @@ macro_rules! get_option_value {
 	($struct:ident.$field:ident) => {
 		$struct.$field.ok_or(concat!("Should have ", stringify!($field)))?
 	};
+
+	($val:expr) => {
+		$val.ok_or(concat!("Should have ", stringify!($val)))?
+	};
 }
 
 pub async fn extract_stream_end(mut chat_stream: ChatStream) -> Result<StreamEnd> {

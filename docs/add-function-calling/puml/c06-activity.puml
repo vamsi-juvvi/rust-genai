@@ -1,0 +1,195 @@
+@startuml
+
+component "Client" as Client_1 #Yellow
+
+'Initial request
+component "OpenAI" as OAI_Req_1 #Gold 
+
+component Groq #lightpink
+
+component "Client" as Client_0 #yellow {
+    json ChatRequestJSON #lightgray {        
+        "tools" : {
+            "type": "function",
+            "function": {
+                "type": "function",
+                "function": {
+                    "name": "get_current_weather",
+                    "description": "Get the current weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "The city and state, e.g. San Francisco, CA"
+                            },
+                            "format": {
+                                "type": "string",
+                                "enum": ["celsius", "fahrenheit"],
+                                "description": "The temperature unit to use. Infer this from the users location."
+                            }
+                        },
+                        "required": ["location", "format"]
+                    }                        
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous.",
+                "role": "system"
+            },
+            {
+                "content": "What's the weather like today in San Jose, CA?",
+                "role": "user"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false    
+    }
+}
+
+Client_0 --> OAI_Req_1 : **ChatRequestJSON**
+
+OAI_Req_1 --> Client_1 : **"Do you prefer the temperature to be in Celsius or Fahrenheit?"**
+
+Client_1 --> Groq : **Is this a question asking to choose between celsius and fahrenheit**\n//'''Do you prefer the temperature to be in Celsius or Fahrenheit?'''//
+
+component "Client" as Client_2 #yellow {
+    json ChatRequestJSON2 #lightgray {        
+        "tools" : "...same list..",
+        "messages": [
+            {
+                "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous.",
+                "role": "system"
+            },
+            {
+                "content": "What's the weather like today in San Jose, CA?",
+                "role": "user"
+            },
+            {
+                "➕ content": "celsius",
+                "➕ role": "user"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false    
+    }
+}
+
+Groq --> Client_2 : **yes**
+
+'+ Response to `Do you want the temp in celcius or fahrenheit
+component "OpenAI" as OAI_Req_2 #Gold {
+    json ToolCallJSON #lightgreen {
+        "choices": [
+        {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+            "content": null,
+            "refusal": null,
+            "role": "assistant",
+            "tool_calls": [
+            {
+                "function": {
+                "arguments": "{\"format\":\"Celcius\",\"location\":\"San Jose, CA\"}",
+                "name": "get_current_weather"
+                },
+                "id": "call_osNBHjdhzevnwznCZ0rko4qT",
+                "type": "function"
+            }
+            ]
+        }
+        }
+    ]
+    }
+    note left of ToolCallJSON 
+     **arguments** is stringified JSON
+    end note
+}
+Client_2 --> OAI_Req_2 : **ChatRequestJSON2**
+
+component "Client" as Client_3 #yellow {
+    portin "process" as client_3_in
+    portout "chat_api" as client_3_out
+
+    component ToolCallExecutor
+    note right of ToolCallExecutor
+      deserialize stringified args into struct
+      call rust fun with struct
+      collect string Result      
+    end note
+
+    json ChatRequestJSON3 #lightgray {        
+        "tools" : "...same list..",
+        "messages": [
+            {
+                "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous.",
+                "role": "system"
+            },
+            {
+                "content": "What's the weather like today in San Jose, CA?",
+                "role": "user"
+            },
+            {
+                "content": "celsius",
+                "role": "user"
+            },
+            {
+                "➕content":"",
+                "➕role": "assistant",
+                "➕tool_calls": [
+                    {
+                    "➕function": {
+                        "➕arguments": "{\"format\":\"Celcius\",\"location\":\"San Jose, CA\"}",
+                        "➕name": "get_current_weather"
+                    },
+                    "➕id": "call_osNBHjdhzevnwznCZ0rko4qT",
+                    "➕type": "function"
+                    }
+                ]
+            },            
+            {
+                "➕content": "24",
+                "➕name": "get_current_weather",
+                "➕role": "tool",
+                "➕tool_call_id": "call_osNBHjdhzevnwznCZ0rko4qT"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false    
+    }
+
+    client_3_in --> ToolCallExecutor
+    ToolCallExecutor ---> ChatRequestJSON3 : **24**
+    ChatRequestJSON3 ---> client_3_out
+}
+
+component "OpenAI" as OAI_Req_3 #Gold {
+    json ChatResponse #lightgreen {
+        "choices": [
+            {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+                "content": "The current temperature in San Jose, CA is 24°C.",
+                "refusal": null,
+                "role": "assistant"
+            }
+            }
+        ]
+    }
+}
+
+OAI_Req_2 --> client_3_in : **ToolCallJSON**
+client_3_out --> OAI_Req_3
+
+component "Client" as Client_4 #yellow
+
+OAI_Req_3 --> Client_4 : **The current temperature in San Jose, CA is 24°C.**
+Client_4 --> Stop
+
+@enduml

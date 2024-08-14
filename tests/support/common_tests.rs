@@ -15,7 +15,7 @@ pub async fn common_test_chat_simple_ok(model: &str) -> Result<()> {
 
 	// -- Check
 	assert!(
-		!get_option_value!(chat_res.content).is_empty(),
+		!get_option_value!(chat_res.content_as_ref()).is_empty(),
 		"content should not be empty"
 	);
 	let usage = chat_res.usage;

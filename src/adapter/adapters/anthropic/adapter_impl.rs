@@ -2,12 +2,11 @@ use crate::adapter::anthropic::AnthropicStreamer;
 use crate::adapter::support::get_api_key_resolver;
 use crate::adapter::{Adapter, AdapterConfig, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
-	ChatRequest, ChatOptionsSet, ChatResponse, ChatRole, ChatStream, ChatStreamResponse, MessageContent,
-	MetaUsage,
+	ChatMessage, ChatOptionsSet, ChatRequest, ChatResponse, ChatResponsePayload, ChatRole, ChatStream, ChatStreamResponse, MessageContent, MetaUsage
 };
 use crate::support::value_ext::ValueExt;
 use crate::webc::WebResponse;
-use crate::Result;
+use crate::{Error, Result};
 use crate::{ConfigSet, ModelInfo};
 use reqwest::RequestBuilder;
 use reqwest_eventsource::EventSource;
@@ -56,7 +55,7 @@ impl Adapter for AnthropicAdapter {
 		let url = Self::get_service_url(model_info.clone(), service_type);
 
 		// -- api_key (this Adapter requires it)
-		let api_key = get_api_key_resolver(model_info, config_set)?;
+		let api_key = get_api_key_resolver(model_info.clone(), config_set)?;
 
 		let headers = vec![
 			// headers
@@ -64,7 +63,7 @@ impl Adapter for AnthropicAdapter {
 			("anthropic-version".to_string(), ANTRHOPIC_VERSION.to_string()),
 		];
 
-		let AnthropicRequestParts { system, messages } = Self::into_anthropic_request_parts(chat_req)?;
+		let AnthropicRequestParts { system, messages } = Self::into_anthropic_request_parts(model_info, chat_req)?;
 
 		// -- Build the basic payload
 		let mut payload = json!({
@@ -111,7 +110,10 @@ impl Adapter for AnthropicAdapter {
 		};
 		let content = content.map(MessageContent::from);
 
-		Ok(ChatResponse { content, usage })
+		Ok(ChatResponse { 
+			payload: ChatResponsePayload::Content(content), 
+			usage }
+		)
 	}
 
 	fn to_chat_stream(
@@ -149,24 +151,34 @@ impl AnthropicAdapter {
 
 	/// Takes the genai ChatMessages and build the System string and json Messages for Anthropic.
 	/// - Will push the `ChatRequest.system` and systems message to `AnthropicsRequestParts.system`
-	fn into_anthropic_request_parts(chat_req: ChatRequest) -> Result<AnthropicRequestParts> {
+	fn into_anthropic_request_parts(model_info: ModelInfo, chat_req: ChatRequest) -> Result<AnthropicRequestParts> {
+		use ChatMessage::*;
+
 		let mut messages: Vec<Value> = Vec::new();
-		let mut systems: Vec<String> = Vec::new();
+		let mut systems: Vec<String> = Vec::new();		
 
-		if let Some(system) = chat_req.system {
-			systems.push(system);
-		}
+		for msg in chat_req.messages {						
 
-		for msg in chat_req.messages {
-			// Note: Will handle more types later
-			let MessageContent::Text(content) = msg.content;
-
-			match msg.role {
-				// for now, system and tool goes to system
-				ChatRole::System | ChatRole::Tool => systems.push(content),
-				ChatRole::User => messages.push(json! ({"role": "user", "content": content})),
-				ChatRole::Assistant => messages.push(json! ({"role": "assistant", "content": content})),
-			}
+			match msg {
+				System{content} =>  systems.push(content),				
+				Assistant {content, ..} => 
+				{
+					let MessageContent::Text(content) = content;
+					messages.push(json! ({"role": "assistant", "content": content}))
+				},
+    			User {content, ..} => 
+				{
+					let MessageContent::Text(content) = content;
+					messages.push(json! ({"role": "user", "content": content}))
+				},
+    			ToolResponse (_tool_msg) => 
+				{
+					return Err(Error::MessageRoleNotSupported {
+						model_info,
+						role: ChatRole::Tool,
+					});
+				},
+			}			
 		}
 
 		let system = if !systems.is_empty() {

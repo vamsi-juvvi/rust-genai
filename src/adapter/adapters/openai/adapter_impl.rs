@@ -2,8 +2,10 @@ use crate::adapter::openai::OpenAIStreamer;
 use crate::adapter::support::get_api_key_resolver;
 use crate::adapter::{Adapter, AdapterConfig, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
-	ChatOptionsSet, ChatRequest, ChatResponse, ChatRole, ChatStream, ChatStreamResponse, MessageContent, MetaUsage,
+	ChatMessage, ChatOptionsSet, ChatRequest, ChatResponse, ChatResponsePayload, ChatStream, ChatStreamResponse, MessageContent, MessageExtra, MetaUsage
 };
+
+use crate::chat::tool::AssistantToolCall;
 use crate::support::value_ext::ValueExt;
 use crate::webc::WebResponse;
 use crate::{ConfigSet, ModelInfo};
@@ -12,6 +14,7 @@ use reqwest::RequestBuilder;
 use reqwest_eventsource::EventSource;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
+use tracing::debug;
 
 pub struct OpenAIAdapter;
 
@@ -44,20 +47,69 @@ impl Adapter for OpenAIAdapter {
 		let api_key = get_api_key_resolver(model_info.clone(), config_set)?;
 		let url = Self::get_service_url(model_info.clone(), service_type);
 
-		OpenAIAdapter::util_to_web_request_data(model_info, url, chat_req, service_type, chat_options, &api_key)
+		let web_req_data = OpenAIAdapter::util_to_web_request_data(model_info, url, chat_req, service_type, chat_options, &api_key);
+
+		// Don't dump the header which contains the bearer tokens
+		let _ = web_req_data.as_ref().inspect(|&wrd| {
+			debug!("{:<12} - {}", "OpenAI.to_web_request_data", serde_json::to_string_pretty(&wrd.payload).unwrap());		
+			}
+		);
+
+		web_req_data
 	}
 
-	fn to_chat_response(_model_info: ModelInfo, web_response: WebResponse) -> Result<ChatResponse> {
+	fn to_chat_response(model_info: ModelInfo, web_response: WebResponse) -> Result<ChatResponse> {
 		let WebResponse { mut body, .. } = web_response;
 
+		debug!("{:<12} - OpenAI.to_chat_response {}", &model_info.model_name, serde_json::to_string_pretty(&body).unwrap());
 		let usage = body.x_take("usage").map(OpenAIAdapter::into_usage).unwrap_or_default();
 
-		let first_choice: Option<Value> = body.x_take("/choices/0")?;
-		let content: Option<String> = first_choice.map(|mut c| c.x_take("/message/content")).transpose()?;
-		let content = content.map(MessageContent::from);
+		// take one of the two branches based on finish_reason.
+		let finish_reason:Option<String> = body.x_get("/choices/0/finish_reason")?;
+		let first_choice: Option<Value> = body.x_take("/choices/0")?;		
 
-		Ok(ChatResponse { content, usage })
+		match finish_reason {
+			Some(finish_reason) => {
+				match finish_reason.as_str() {
+					"stop" => {
+						let res_content: Option<String> = first_choice
+						.map(|mut c| c.x_take("/message/content"))
+						.transpose()?;				
+		
+						Ok(
+							ChatResponse { 
+							payload: ChatResponsePayload::Content(res_content.map(MessageContent::from)), 
+							usage }
+						)
+					},
+					"tool_calls" => {
+						let res_toolcall : Option<Value> = first_choice
+						.map(|mut c| c.x_take("/message/tool_calls"))
+						.transpose()?;				
+		
+						debug!("{:<12} -  {}", "OpenAI.to_web_request_data/tool_calls", 
+							serde_json::to_string_pretty(&res_toolcall).unwrap());
+
+						let tool_calls: Option<Vec<AssistantToolCall>> = serde_json::from_value(res_toolcall.unwrap())?;
+		
+						Ok(
+							ChatResponse { 
+							payload: ChatResponsePayload::ToolCall(tool_calls), 
+							usage }
+						)
+					},
+					_ => Err(Error::NeitherChatNorToolresponse { model_info }),
+				}				
+			},
+			None => {
+				Err(Error::UnexpectedChatResponseFormat{
+					model_info, 
+					detail: "OpenAI Adapter: /choices/0/finish_reason is missing".to_string()}
+				)
+			}
+		}		
 	}
+
 
 	fn to_chat_stream(
 		model_info: ModelInfo,
@@ -73,7 +125,8 @@ impl Adapter for OpenAIAdapter {
 }
 
 /// Support function for other Adapter that share OpenAI APIs
-impl OpenAIAdapter {
+impl OpenAIAdapter {	
+
 	pub(in crate::adapter::adapters) fn util_get_service_url(
 		_model_info: ModelInfo,
 		service_type: ServiceType,
@@ -104,10 +157,11 @@ impl OpenAIAdapter {
 
 		// -- Build the basic payload
 		let model_name = model_info.model_name.to_string();
-		let OpenAIRequestParts { messages } = Self::into_openai_request_parts(model_info, chat_req)?;
+		let OpenAIRequestParts { messages, tools } = Self::into_openai_request_parts(model_info, chat_req)?;
 		let mut payload = json!({
 			"model": model_name,
 			"messages": messages,
+			"tools" : tools,
 			"stream": stream
 		});
 
@@ -155,42 +209,67 @@ impl OpenAIAdapter {
 	///       It seems the Ollama compatibility layer does not work well with multiple System message.
 	///       So, when `true`, it will concatenate the system message as a single on at the beginning
 	fn into_openai_request_parts(model_info: ModelInfo, chat_req: ChatRequest) -> Result<OpenAIRequestParts> {
+		use ChatMessage::*;
+
 		let mut system_messages: Vec<String> = Vec::new();
 		let mut messages: Vec<Value> = Vec::new();
 
-		let ollama_variant = matches!(model_info.adapter_kind, AdapterKind::Ollama);
+		let ollama_variant = matches!(model_info.adapter_kind, AdapterKind::Ollama);	
 
-		if let Some(system_msg) = chat_req.system {
-			if ollama_variant {
-				system_messages.push(system_msg)
-			} else {
-				messages.push(json!({"role": "system", "content": system_msg}));
-			}
-		}
-
-		for msg in chat_req.messages {
-			// Note: Will handle more types later
-			let MessageContent::Text(content) = msg.content;
-
-			match msg.role {
-				// for now, system and tool goes to system
-				ChatRole::System => {
+		for msg in chat_req.messages {			
+			match msg {
+				System{content} => {
 					// see note in the function comment
 					if ollama_variant {
 						system_messages.push(content);
 					} else {
-						messages.push(json!({"role": "system", "content": content}))
+						messages.push(json!({"role": "system", "content": content}));
 					}
-				}
-				ChatRole::User => messages.push(json! ({"role": "user", "content": content})),
-				ChatRole::Assistant => messages.push(json! ({"role": "assistant", "content": content})),
-				ChatRole::Tool => {
-					return Err(Error::MessageRoleNotSupported {
-						model_info,
-						role: ChatRole::Tool,
-					})
-				}
-			}
+				},
+				Assistant {content, extra} => {
+					let MessageContent::Text(content) = content;
+
+					if let Some(MessageExtra::ToolCall(toolcall_v)) = extra {
+						let mut tc_json_v = Vec::<Value>::new();
+						for atc in toolcall_v {
+							let func_args_string = match atc.function.fn_arguments {
+								None => "".to_string(),
+								Some(json_val) => json_val.to_string(),
+							};
+
+							tc_json_v.push(json!({
+								"id" : atc.tool_call_id,
+								"type" : atc.tool_call_type,
+								"function": {
+									"name": atc.function.fn_name,
+									"arguments" : func_args_string
+								}
+							}));
+						}
+
+						messages.push(json! ({
+							"role": "assistant", 
+							"content": content,
+							"tool_calls" : tc_json_v,							
+						}));	
+					}
+					else {						
+						messages.push(json! ({"role": "assistant", "content": content}));
+					}
+				},
+    			User {content, ..} => {
+					let MessageContent::Text(content) = content;
+					messages.push(json! ({"role": "user", "content": content}));
+				},
+    			ToolResponse (tool_msg) => {
+					messages.push(json!({
+						"role" : "tool",
+						"tool_call_id" : tool_msg.tool_call_id,
+						"name" : tool_msg.tool_name,
+						"content": tool_msg.tool_result,
+					}));
+				},
+			}			
 		}
 
 		if !system_messages.is_empty() {
@@ -198,7 +277,7 @@ impl OpenAIAdapter {
 			messages.insert(0, json!({"role": "system", "content": system_message}));
 		}
 
-		Ok(OpenAIRequestParts { messages })
+		Ok(OpenAIRequestParts { messages, tools: chat_req.tools })
 	}
 }
 
@@ -206,6 +285,7 @@ impl OpenAIAdapter {
 
 struct OpenAIRequestParts {
 	messages: Vec<Value>,
+	tools: Option<Vec<Value>>,
 }
 
 // endregion: --- Support

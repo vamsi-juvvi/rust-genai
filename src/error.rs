@@ -11,7 +11,7 @@ pub enum Error {
 	ChatReqHasNoMessages {
 		model_info: ModelInfo,
 	},
-	LastChatMessageIsNoUser {
+	LastChatMessageIsNotUser {
 		model_info: ModelInfo,
 		actual_role: ChatRole,
 	},
@@ -24,6 +24,15 @@ pub enum Error {
 	// -- Chat Output
 	NoChatResponse {
 		model_info: ModelInfo,
+	},
+
+	UnexpectedChatResponseFormat {
+		model_info: ModelInfo,
+		detail : String,
+	},
+
+	NeitherChatNorToolresponse {
+		model_info: ModelInfo
 	},
 
 	// -- Auth
@@ -70,6 +79,9 @@ pub enum Error {
 	// -- Utils
 	#[from]
 	XValue(crate::support::value_ext::Error),
+
+	#[from]
+	SerdeJson(serde_json::Error),
 
 	// -- Externals
 	#[from]

@@ -1,59 +1,67 @@
 //! This module contains all the types related to a Chat Request (except ChatOptions, which has its own file).
 
+use serde_json::Value;
 use crate::chat::MessageContent;
+use crate::chat::tool::AssistantToolCall;
 
 // region:    --- ChatRequest
 
 #[derive(Debug, Clone, Default)]
-pub struct ChatRequest {
-	pub system: Option<String>,
+pub struct ChatRequest {	
 	pub messages: Vec<ChatMessage>,
+	pub tools : Option<Vec<Value>>,
 }
 
 /// Constructors
 impl ChatRequest {
 	pub fn new(messages: Vec<ChatMessage>) -> Self {
-		Self { messages, system: None }
+		Self { messages, tools: None}
 	}
 
 	/// From `.system` property content.
 	pub fn from_system(content: impl Into<String>) -> Self {
-		Self {
-			system: Some(content.into()),
-			messages: Vec::new(),
-		}
+		let obj = Self::new(Vec::new());
+		obj.with_system(content)		 
 	}
 }
 
 /// Chainable Setters
 impl ChatRequest {
 	pub fn with_system(mut self, system: impl Into<String>) -> Self {
-		self.system = Some(system.into());
-		self
-	}
+		self.messages.push(
+			ChatMessage::System{
+				content: system.into()}
+		);
 
+		self
+	}	
+
+	/// Use the various ChatMessage::XX items to create the ChatMessage
+	/// instance to append
 	pub fn append_message(mut self, msg: ChatMessage) -> Self {
 		self.messages.push(msg);
+		self
+	}		
+
+	pub fn append_tool(mut self, tool: Value) -> Self {		
+		self.tools.get_or_insert(Vec::new()).push(tool);
 		self
 	}
 }
 
 /// Getters
 impl ChatRequest {
-	/// Iterate through all of the system content, starting with the eventual
-	/// ChatRequest.system and then the ChatMessage of role System
-	pub fn iter_systems(&self) -> impl Iterator<Item = &str> {
-		self.system
+	/// Iterate through all of the system content
+	pub fn iter_systems(&self) -> impl Iterator<Item = &str> {		
+		self
+			.messages			
 			.iter()
-			.map(|s| s.as_str())
-			.chain(self.messages.iter().filter_map(|message| match message.role {
-				ChatRole::System => match message.content {
-					MessageContent::Text(ref content) => Some(content.as_str()),
-				},
+			.filter_map(|message| match message {
+				ChatMessage::System { content } => Some(content.as_str()),
 				_ => None,
-			}))
+			})
 	}
-
+	
 	/// Combine the eventual ChatRequest `.system` and system messages into one string.
 	/// - It will start with the evnetual `chat_request.system`
 	/// - Then concatenate the eventual `ChatRequestMessage` of Role `System`
@@ -85,38 +93,71 @@ impl ChatRequest {
 // region:    --- ChatMessage
 
 #[derive(Debug, Clone)]
-pub struct ChatMessage {
-	pub role: ChatRole,
-	pub content: MessageContent,
-	pub extra: Option<MessageExtra>,
+pub struct ToolMessage {
+    pub tool_call_id: String,
+	pub tool_name: String,	
+	pub tool_result : String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChatMessage {    
+	System       {content: String},
+    Assistant    {content: MessageContent, extra: Option<MessageExtra>},
+    User         {content: MessageContent, extra: Option<MessageExtra>},
+    ToolResponse (ToolMessage)
 }
 
 /// Constructors
-impl ChatMessage {
-	pub fn system(content: impl Into<MessageContent>) -> Self {
-		Self {
-			role: ChatRole::System,
+impl ChatMessage {	
+	pub fn system(content: impl Into<String>) -> Self {
+		Self::System {
 			content: content.into(),
-			extra: None,
 		}
 	}
 
 	pub fn assistant(content: impl Into<MessageContent>) -> Self {
-		Self {
-			role: ChatRole::Assistant,
+		Self::Assistant{
 			content: content.into(),
-			extra: None,
+			extra: None
+		}
+	}
+
+	pub fn assistant_with_extra(content: impl Into<MessageContent>, extra: impl Into<MessageExtra>) -> Self {
+		Self::Assistant{
+			content: content.into(),
+			extra: Some(extra.into())
 		}
 	}
 
 	pub fn user(content: impl Into<MessageContent>) -> Self {
-		Self {
-			role: ChatRole::User,
+		Self::User {
 			content: content.into(),
-			extra: None,
+			extra: None
 		}
 	}
+
+	pub fn tool_response(tool_call_id: String, tool_name: String, tool_result: String) -> Self {
+		Self::ToolResponse(ToolMessage{tool_call_id, tool_name, tool_result})
+	}
 }
+
+// Implementation to convert AssistantToolCalls into MessageExtras
+impl From<Vec<AssistantToolCall>> for MessageExtra 
+{
+	fn from(atc_v: Vec<AssistantToolCall>) -> Self {
+		MessageExtra::ToolCall(atc_v)
+	}
+}	
+
+// Implementation to convert AssistantToolCalls into ChatMessage
+impl From<Vec<AssistantToolCall>> for ChatMessage
+{
+	fn from(atc_v: Vec<AssistantToolCall>) -> Self {
+		ChatMessage::Assistant{
+			content:"".into(), 
+			extra: Some(MessageExtra::ToolCall(atc_v))}
+	}
+}	
 
 #[derive(Debug, Clone)]
 pub enum ChatRole {
@@ -126,15 +167,27 @@ pub enum ChatRole {
 	Tool,
 }
 
-#[derive(Debug, Clone)]
-pub enum MessageExtra {
-	Tool(ToolExtra),
+impl From<ChatMessage> for ChatRole {
+	fn from(msg:ChatMessage) -> Self {
+		match msg {
+			ChatMessage::System {..} => Self::System,
+			ChatMessage::Assistant {..} => Self::Assistant,
+			ChatMessage::User{..} => Self::User,
+			ChatMessage::ToolResponse(_) => Self::Tool,
+		}
+	}
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone)]
-pub struct ToolExtra {
-	tool_id: String,
+pub enum MessageExtra {
+	ToolCall(Vec<AssistantToolCall>),
 }
+
+// TODO: Remove this
+// #[allow(unused)]
+// #[derive(Debug, Clone)]
+// pub struct ToolExtra {
+// 	tool_id: String,
+// }
 
 // endregion: --- ChatMessage
