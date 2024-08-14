@@ -32,7 +32,7 @@ I am using plantuml's component diagrams but making then look like activity diag
   - Use unicode inserter `Win + .` to add ➕ etc to show diffs
 
 See [c06-activity.puml](./puml/c06-activity.puml) for the source of the diagram below.
-![c06 Activity diagram](./img/c06-activity.png)
+![c06 Activity diagram](./img/c06-activity.svg)
 
 # Code Walkthrough
 
