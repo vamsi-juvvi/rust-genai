@@ -21,6 +21,9 @@ This example was run using OpenAI's `gpt-4o-mini` and Groq's tool-preview models
 
 # Flow Diagram
 
+See [c07-activity.puml](./puml/c07-activity.puml) for the source of the diagram below.
+![c07 Activity diagram](./img/c07-activity.png)
+
 ```plantuml
 @startuml
 

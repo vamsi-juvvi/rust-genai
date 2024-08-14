@@ -1,0 +1,240 @@
+@startuml
+
+'Initial chat-response
+'Tool call asking for get_current_temperature()
+component "OpenAI" as OAI_Req_1 #Gold {
+    json ToolCalls_1 #lightgreen {
+        "choices": [
+            {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+                "content": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": [
+                {
+                    "function": {
+                    "arguments": "{}",
+                    "name": "get_current_temperature"
+                    },
+                    "id": "call_IpHnhCch3DndGl7EU8mGBbHj",
+                    "type": "function"
+                }
+                ]
+            }
+            }
+        ]
+    }
+}
+
+component "Client" as Client_0 #yellow {
+    json ChatRequestJSON #lightgray {        
+        "tools" : [
+                    {
+                        "function": {
+                            "description": "Get the current temperature",
+                            "name": "get_current_temperature"
+                        },
+                        "type": "function"
+                    },
+                    {
+                    "function": {
+                        "description": "Set the current temperature",
+                        "name": "set_current_temperature",
+                        "parameters": {
+                        "properties": {
+                            "temperature": {
+                            "description": "The temperature value to set to. This will be a plain number between -100 and 100. The number will not have any units.",
+                            "type": "string"
+                            }
+                        },
+                        "required": [
+                            "temperature"
+                        ],
+                        "type": "object"
+                        }
+                    },
+                    "type": "function"
+                    }  
+        ],
+        "messages": [
+            {
+                "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous.",
+                "role": "system"
+            },
+            {
+                "content": "Increase the temperature by 5 degrees",
+                "role": "user"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false    
+    }
+}
+
+Client_0 --> OAI_Req_1 : **ChatRequestJSON**\n**Increase the temperature by 5 degrees**
+
+' Respond to tool_call - get_current_temperature()
+component "Client" as Client_1 #Yellow {
+    component "ToolCallExecutor" as ToolCallExecutor_1
+    json ChatRequestJSON1 #lightgrey {
+        "messages": [
+            {
+            "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous. Use the supplied tools in the correct order to get the needed information.",
+            "role": "system"
+            },
+            {
+            "content": "Increase the temperature by 5 degrees",
+            "role": "user"
+            },
+            {
+            "➕ content": "",
+            "➕ role": "assistant",
+            "➕ tool_calls": [
+                {
+                "function": {
+                    "arguments": "{}",
+                    "name": "get_current_temperature"
+                },
+                "id": "call_IpHnhCch3DndGl7EU8mGBbHj",
+                "type": "function"
+                }
+            ]
+            },
+            {
+            "➕ content": "70",
+            "➕ name": "get_current_temperature",
+            "➕ role": "tool",
+            "➕ tool_call_id": "call_IpHnhCch3DndGl7EU8mGBbHj"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false,
+        "tools": "...unchanged..."
+    }
+
+    ToolCallExecutor_1 --> ChatRequestJSON1 : **70**
+}
+
+OAI_Req_1 --> Client_1 : **ToolCalls_1**\n//get_current_temperature()//
+
+'Followup chat-response
+'Tool call asking for set_temperature(xx)
+component "OpenAI" as OAI_Req_2 #Gold {
+    json ToolCalls_2 #lightgreen {
+        "choices": [
+            {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+                "content": null,
+                "refusal": null,
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                        "arguments": "{\"temperature\":\"75\"}",
+                        "name": "set_current_temperature"
+                        },
+                        "id": "call_wvgzSQtNdqsOWdgqES5axsb7",
+                        "type": "function"
+                    }
+                ]                
+                }
+            }
+        ]
+    }
+}
+
+Client_1 ---> OAI_Req_2
+
+' Respond to tool_call - set_current_temperature()
+component "Client" as Client_3 #Yellow {
+    component "ToolCallExecutor" as ToolCallExecutor_2
+    json ChatRequestJSON2 #lightgrey {
+        "messages": [
+            {
+            "content": "Don't make assumptions about what values to plug into functions. Ask for clarification if a user request is ambiguous. Use the supplied tools in the correct order to get the needed information.",
+            "role": "system"
+            },
+            {
+            "content": "Increase the temperature by 5 degrees",
+            "role": "user"
+            },
+            {
+            "content": "",
+            "role": "assistant",
+            "tool_calls": [
+                {
+                "function": {
+                    "arguments": "{}",
+                    "name": "get_current_temperature"
+                },
+                "id": "call_IpHnhCch3DndGl7EU8mGBbHj",
+                "type": "function"
+                }
+            ]
+            },
+            {
+            "content": "70",
+            "name": "get_current_temperature",
+            "role": "tool",
+            "tool_call_id": "call_IpHnhCch3DndGl7EU8mGBbHj"
+            },
+            {
+            "➕ content": "",
+            "➕ role": "assistant",
+            "➕ tool_calls": [
+                {
+                "function": {
+                    "arguments": "{\"temperature\":\"75\"}",
+                    "name": "set_current_temperature"
+                },
+                "id": "call_wvgzSQtNdqsOWdgqES5axsb7",
+                "type": "function"
+                }
+            ]
+            },
+            {
+            "➕ content": "75",
+            "➕ name": "set_current_temperature",
+            "➕ role": "tool",
+            "➕ tool_call_id": "call_wvgzSQtNdqsOWdgqES5axsb7"
+            }
+        ],
+        "model": "gpt-4o-mini",
+        "stream": false,
+        "tools": "...unchanged..."
+    }
+
+    ToolCallExecutor_2 --> ChatRequestJSON2 : **75**
+}
+
+' Respond with set_current_temperature(..)
+OAI_Req_2 --> Client_3 : **set_current_temperature(..)**
+
+component "OpenAI" as OAI_Req_3 {
+    json ChatResponse #lightgreen {
+        "choices": [
+            {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "message": {
+                "content": "The temperature has been successfully increased to 75 degrees.",
+                "refusal": null,
+                "role": "assistant"
+            }
+            }
+        ]
+    }
+}
+
+Client_3 ---> OAI_Req_3 : **ChatRequestJSON2**
+
+OAI_Req_3 --> Stop
+
+@enduml
