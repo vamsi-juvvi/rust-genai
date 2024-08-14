@@ -2,7 +2,7 @@ use crate::adapter::gemini::GeminiStreamer;
 use crate::adapter::support::get_api_key_resolver;
 use crate::adapter::{Adapter, AdapterConfig, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
-	ChatOptionsSet, ChatRequest, ChatResponse, ChatRole, ChatStream, ChatStreamResponse, MessageContent, MetaUsage,
+	ChatMessage, ChatOptionsSet, ChatRequest, ChatResponse, ChatResponsePayload, ChatRole, ChatStream, ChatStreamResponse, MessageContent, MetaUsage
 };
 use crate::support::value_ext::ValueExt;
 use crate::webc::{WebResponse, WebStream};
@@ -105,7 +105,10 @@ impl Adapter for GeminiAdapter {
 		let GeminiChatResponse { content, usage } = gemini_response;
 		let content = content.map(MessageContent::from);
 
-		Ok(ChatResponse { content, usage })
+		Ok(ChatResponse { 
+			payload: ChatResponsePayload::Content(content), 
+			usage }
+		)
 	}
 
 	fn to_chat_stream(
@@ -161,30 +164,34 @@ impl GeminiAdapter {
 	///   - This adapter use the v1beta, which supports`systemInstruction`
 	/// - the eventual `chat_req.system` get pushed first in the "systemInstruction"
 	fn into_gemini_request_parts(model_info: ModelInfo, chat_req: ChatRequest) -> Result<GeminiChatRequestParts> {
+		use ChatMessage::*;
+
 		let mut contents: Vec<Value> = Vec::new();
-		let mut systems: Vec<String> = Vec::new();
+		let mut systems: Vec<String> = Vec::new();		
 
-		if let Some(system) = chat_req.system {
-			systems.push(system);
-		}
+		// -- Build		
+		for msg in chat_req.messages {						
 
-		// -- Build
-		for msg in chat_req.messages {
-			// Note: Will handle more types later
-			let MessageContent::Text(content) = msg.content;
-
-			match msg.role {
-				// for now, system go as "user" (later, we might have adapter_config.system_to_user_impl)
-				ChatRole::System => systems.push(content),
-				ChatRole::User => contents.push(json! ({"role": "user", "parts": [{"text": content}]})),
-				ChatRole::Assistant => contents.push(json! ({"role": "model", "parts": [{"text": content}]})),
-				ChatRole::Tool => {
+			match msg {
+				System{content} =>  systems.push(content),				
+				Assistant {content, ..} => 
+				{
+					let MessageContent::Text(content) = content;
+					contents.push(json! ({"role": "model", "parts": [{"text": content}]}))
+				},
+    			User {content, ..} => 
+				{
+					let MessageContent::Text(content) = content;
+					contents.push(json! ({"role": "user", "parts": [{"text": content}]}))					
+				},
+    			ToolResponse (_tool_msg) => 
+				{
 					return Err(Error::MessageRoleNotSupported {
 						model_info,
 						role: ChatRole::Tool,
-					})
-				}
-			}
+					});
+				},
+			}			
 		}
 
 		let system = if !systems.is_empty() {
